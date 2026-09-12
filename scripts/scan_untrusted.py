@@ -38,9 +38,11 @@ Usage:
     python scan_untrusted.py DIR --min-confidence moderate
 
 Exit codes:
-    0  no findings
+    0  no findings AND complete coverage
     1  findings reported
-    2  usage error, or a requested target was missing or unreadable
+    2  usage error, or coverage was incomplete -- a target was missing,
+       unreadable, or in a format this scanner cannot decode. A run that
+       could not read everything it was pointed at never exits 0.
 
 Stdlib only. No third-party dependencies.
 """
@@ -51,6 +53,7 @@ import argparse
 import base64
 import binascii
 import bisect
+import codecs
 import json
 import re
 import sys
@@ -138,14 +141,6 @@ BIDI_OVERRIDE = {
 TAG_START, TAG_END = 0xE0000, 0xE007F
 
 
-def _is_pictographic(ch: str) -> bool:
-    o = ord(ch)
-    return (
-        0x1F000 <= o <= 0x1FAFF or 0x2600 <= o <= 0x27BF
-        or 0x2190 <= o <= 0x21FF or o in (0xFE0F, 0xFE0E)
-        or 0x1F1E6 <= o <= 0x1F1FF
-    )
-
 
 CONFUSABLES = str.maketrans({
     "а": "a", "с": "c", "е": "e", "о": "o", "р": "p", "х": "x", "у": "y",
@@ -159,10 +154,6 @@ CONFUSABLES = str.maketrans({
 def deconfuse(text: str) -> str:
     return unicodedata.normalize("NFKC", text).translate(CONFUSABLES)
 
-
-def _is_rtl(ch: str) -> bool:
-    o = ord(ch)
-    return 0x0590 <= o <= 0x08FF or 0xFB1D <= o <= 0xFDFF or 0xFE70 <= o <= 0xFEFF
 
 
 # --------------------------------------------------------------------------
@@ -375,7 +366,6 @@ def _rejoin_spaced(text: str) -> str:
 
 
 def _rot13(text: str) -> str:
-    import codecs
     return codecs.encode(text, "rot13")
 
 
@@ -390,6 +380,9 @@ def build_views(text: str) -> dict[str, str]:
     folded = re.sub(r"[ 	]+", " ", folded)
     if folded != text:
         views["folded"] = folded
+    deconfused = deconfuse(folded)
+    if deconfused != folded:
+        views["confusables"] = deconfused
     if len(text) <= MAX_DECODE_BYTES:
         views["rot13"] = _rot13(text)
         views["reversed"] = text[::-1]
@@ -447,19 +440,63 @@ def decoded_segments(text: str) -> list[tuple[int, int, str, str]]:
 FENCE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 INLINE_CODE = re.compile(r"`[^`\n]+`")
 QUOTE_LINE = re.compile(r"^\s*>.*$", re.MULTILINE)
-QUOTED_SPAN = re.compile(r"[\"'‘’“”][^\"'‘’“”\n]{8,}"
-                         r"[\"'‘’“”]")
+QUOTED_SPAN = re.compile(r"[\"'‘’“”][^\"'‘’“”\n]{8,}[\"'‘’“”]")
+
+# Phrases that mark the surrounding text as *describing* something rather than
+# instructing. Security writing, tutorials, and runbooks are full of these, and
+# they are the main reason a detector built for hostile text misfires on
+# documentation. A marker downgrades confidence one step; it never suppresses.
+DOC_CONTEXT = re.compile(
+    r"(?:\bfor\s+example\b|\be\.?g\.?\b|\ban?\s+example\b|\bexamples?\s+(?:of|include)\b"
+    r"|\bsuch\s+as\b|\bthe\s+phrase\b|\bthe\s+string\b|\bthe\s+syntax\b"
+    r"|\bdocument(?:s|ed|ation)\b|\bdemonstrat(?:es?|ing|ion)\b|\billustrat(?:es?|ing)\b"
+    r"|\banti-?pattern\b|\bcommon\s+(?:injection|attack|marker|mistake)\b"
+    r"|\bnever\s+do\s+this\b|\bdo\s+not\s+do\s+this\b|\bdangerous\b|\bmalicious\b"
+    r"|\baccording\s+to\b|\bas\s+(?:recorded|noted|minuted)\b"
+    r"|\bthe\s+\w+\s+(?:is|was)\s*:)", re.IGNORECASE)
+
+# A tool-coercion match is far more credible when an actual command follows it.
+COMMAND_SHAPED = re.compile(
+    r"(?:[`$]|\b(?:sudo|curl|wget|bash|sh|python|npm|pip|git|rm|chmod|ssh|psql|"
+    r"mysql|docker|kubectl|powershell|iwr|invoke-)\b|[/~]\w|\|\s*\w|;\s*\w)")
 
 
-def context_spans(text: str) -> list[tuple[int, int]]:
-    spans = []
+class Spans:
+    """Merged, sorted intervals with O(log n) containment. Replaces a linear
+    scan that made dense input quadratic."""
+
+    def __init__(self, raw: list[tuple[int, int]]) -> None:
+        self.starts: list[int] = []
+        self.ends: list[int] = []
+        for s, e in sorted(raw):
+            if self.ends and s <= self.ends[-1]:
+                self.ends[-1] = max(self.ends[-1], e)
+            else:
+                self.starts.append(s)
+                self.ends.append(e)
+
+    def contains(self, start: int, end: int) -> bool:
+        i = bisect.bisect_right(self.starts, start) - 1
+        return i >= 0 and end <= self.ends[i]
+
+
+def context_spans(text: str) -> Spans:
+    spans: list[tuple[int, int]] = []
     for regex in (FENCE, INLINE_CODE, QUOTE_LINE, QUOTED_SPAN):
         spans.extend((m.start(), m.end()) for m in regex.finditer(text))
-    return sorted(spans)
+    return Spans(spans)
 
 
-def _in_context(spans: list[tuple[int, int]], start: int, end: int) -> bool:
-    return any(s <= start and end <= e for s, e in spans)
+def _documentary(text: str, start: int, end: int) -> bool:
+    """Is there a documentation marker close to this match, either side?
+
+    Attribution often trails the claim it qualifies ("... approved the invoice,
+    according to the minutes"), so both directions count. This only lowers
+    confidence -- an attacker appending "for example" still gets reported.
+    """
+    before = text[max(0, start - 90):start]
+    after = text[end:end + 60]
+    return bool(DOC_CONTEXT.search(before) or DOC_CONTEXT.search(after))
 
 
 class LineIndex:
@@ -528,8 +565,13 @@ def _excerpt(text: str, start: int, end: int, width: int = 120) -> str:
 # Checks
 # --------------------------------------------------------------------------
 
+def _downgrade(confidence: str, steps: int = 1) -> str:
+    order = (STRONG, MODERATE, WEAK)
+    return order[min(order.index(confidence) + steps, len(order) - 1)]
+
+
 def check_patterns(text: str, source: str, idx: LineIndex,
-                   spans: list[tuple[int, int]]) -> list[Finding]:
+                   spans: Spans) -> list[Finding]:
     """Patterns over the raw text, plus derived views. A hit that appears only
     in a derived view means the raw text was obfuscated -- higher confidence."""
     findings: list[Finding] = []
@@ -537,13 +579,27 @@ def check_patterns(text: str, source: str, idx: LineIndex,
 
     for regex, family, note in COMPILED:
         for m in regex.finditer(text):
-            quoted = _in_context(spans, m.start(), m.end())
             raw_hits.add((family, note))
+            confidence, reasons = STRONG, []
+
+            if spans.contains(m.start(), m.end()):
+                confidence = WEAK
+                reasons.append("quoted/code")
+            elif _documentary(text, m.start(), m.end()):
+                confidence = _downgrade(confidence)
+                reasons.append("documentary context")
+
+            # "Run this command" with no command in sight is usually prose.
+            if (family == "tool-coercion"
+                    and not COMMAND_SHAPED.search(text[m.start():m.end() + 80])):
+                confidence = _downgrade(confidence)
+                reasons.append("no command follows")
+
             findings.append(Finding(
-                source, idx.line_of(m.start()),
-                WEAK if quoted else STRONG, FAMILY_IMPACT[family], family, note,
+                source, idx.line_of(m.start()), confidence,
+                FAMILY_IMPACT[family], family, note,
                 _excerpt(text, m.start(), m.end()),
-                context="quoted/code" if quoted else "",
+                context=", ".join(reasons),
                 start=m.start(), end=m.end(), signals=[note],
             ))
 
@@ -554,12 +610,16 @@ def check_patterns(text: str, source: str, idx: LineIndex,
             m = regex.search(view_text)
             if not m:
                 continue
+            # Offsets in a derived view do not map back to the original text,
+            # so report no line rather than a wrong one. line=0 formats as the
+            # bare source, and start=-1 keeps it out of span merging.
             findings.append(Finding(
-                source, 1, STRONG, FAMILY_IMPACT[family], family,
+                source, 0, STRONG, FAMILY_IMPACT[family], family,
                 f"{note} (only visible after {view_name} normalisation "
-                f"-- text appears deliberately obfuscated)",
+                f"-- text appears deliberately obfuscated; position is relative "
+                f"to the {view_name} view, not the original file)",
                 _excerpt(view_text, m.start(), m.end()),
-                view=view_name, start=0, end=0, signals=[note],
+                view=view_name, start=-1, end=-1, signals=[note],
             ))
     return findings
 
@@ -787,24 +847,60 @@ def scan_file(path: Path) -> tuple[list[Finding], list[ScanError]]:
     return scan_text(data.decode("utf-8", errors="replace"), str(path)), []
 
 
-def collect(targets: list[str], exts: tuple[str, ...]
+def _walk(root: Path, exts: tuple[str, ...], follow_symlinks: bool,
+          files: list[Path], skipped: list[Path], errors: list[ScanError]) -> None:
+    """Iterative walk. Does not follow symlinks by default: a symlinked
+    directory can loop forever or point outside the tree the operator named."""
+    seen_dirs: set[tuple[int, int]] = set()
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = sorted(current.iterdir())
+        except OSError as exc:
+            errors.append(ScanError(str(current), str(exc)))
+            continue
+        for p in entries:
+            try:
+                is_link = p.is_symlink()
+                if is_link and not follow_symlinks:
+                    skipped.append(p)
+                    continue
+                if p.is_dir():
+                    if follow_symlinks:
+                        st = p.stat()
+                        key = (st.st_dev, st.st_ino)
+                        if key in seen_dirs:      # symlink loop
+                            continue
+                        seen_dirs.add(key)
+                    stack.append(p)
+                elif p.is_file():
+                    if p.suffix.lower() in exts:
+                        files.append(p)
+                    elif p.suffix.lower() in NEEDS_EXTRACTION:
+                        # Looks like a document but cannot be read as text.
+                        # Reported loudly -- this is the case that would
+                        # otherwise pass as "clean".
+                        skipped.append(p)
+            except OSError as exc:
+                errors.append(ScanError(str(p), str(exc)))
+
+
+def collect(targets: list[str], exts: tuple[str, ...],
+            follow_symlinks: bool = False
             ) -> tuple[list[Path], list[ScanError], list[Path]]:
-    files, errors, skipped = [], [], []
+    files: list[Path] = []
+    errors: list[ScanError] = []
+    skipped: list[Path] = []
     for target in targets:
         path = Path(target)
         if path.is_dir():
-            for p in sorted(path.rglob("*")):
-                if not p.is_file():
-                    continue
-                if p.suffix.lower() in exts:
-                    files.append(p)
-                elif p.suffix.lower() in NEEDS_EXTRACTION:
-                    skipped.append(p)
+            _walk(path, exts, follow_symlinks, files, skipped, errors)
         elif path.is_file():
             files.append(path)
         else:
             errors.append(ScanError(target, "no such file or directory"))
-    return files, errors, skipped
+    return sorted(set(files)), errors, sorted(set(skipped))
 
 
 # --------------------------------------------------------------------------
@@ -886,6 +982,9 @@ def main() -> int:
                         default=WEAK, help="suppress findings below this confidence")
     parser.add_argument("--min-impact", choices=[CRITICAL, HIGH, MEDIUM, LOW],
                         default=LOW, help="suppress findings below this impact")
+    parser.add_argument("--follow-symlinks", action="store_true",
+                        help="descend into symlinked directories (off by default: "
+                             "a link can loop, or point outside the named tree)")
     args = parser.parse_args()
 
     if not args.targets and not args.stdin:
@@ -904,7 +1003,8 @@ def main() -> int:
     if args.targets:
         exts = tuple(e if e.startswith(".") else f".{e}"
                      for e in args.ext.lower().split(",") if e)
-        files, collect_errors, skipped = collect(args.targets, exts)
+        files, collect_errors, skipped = collect(args.targets, exts,
+                                                 args.follow_symlinks)
         errors += collect_errors
         for path in files:
             file_findings, file_errors = scan_file(path)
@@ -918,10 +1018,16 @@ def main() -> int:
                 and IMPACT_ORDER[f.impact] <= IMPACT_ORDER[args.min_impact]]
     findings.sort(key=_sort_key)
 
+    # Coverage is incomplete if anything the operator pointed at could not be
+    # read, or was a document format this scanner cannot decode. Such a run must
+    # never exit 0, or a CI gate would read "clean" when nothing was examined.
+    coverage_complete = not errors and not skipped
+
     if args.json:
         print(json.dumps({
             "scanned": scanned,
             "count": len(findings),
+            "coverage_complete": coverage_complete,
             "findings": [asdict(f) for f in findings],
             "errors": [asdict(e) for e in errors],
             "not_scanned": [str(p) for p in skipped],
@@ -929,7 +1035,7 @@ def main() -> int:
     else:
         report(findings, scanned, errors, skipped)
 
-    if errors:
+    if not coverage_complete:
         return 2
     return 1 if findings else 0
 

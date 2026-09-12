@@ -4,7 +4,9 @@ An agent skill that keeps prompt scaffolding out of what the model writes, and
 keeps untrusted content out of what the model obeys.
 
 Works with Claude Code, Codex, and anything else that reads `SKILL.md` or
-`AGENTS.md`. No dependencies beyond Python's standard library.
+`AGENTS.md`. The skill and its scanner use the Python standard library only.
+Document extraction is a separate optional script; it also works with the
+standard library, and will use a PDF library if you happen to have one.
 
 ## The problem
 
@@ -45,15 +47,28 @@ which layer it is permitted to reach. In both cases the offending text is
 
 ## How it works
 
-Five passes:
+**Two modes, and most work needs only the first.** Running a provenance audit
+before writing a cover letter is theatre, and a skill that feels like bureaucracy
+gets switched off before the day it matters.
 
-| Pass | Does |
-|---|---|
-| 0 | Sort every input into PROTECTED / PRINCIPAL / DELEGATED / UNTRUSTED. Only the first two carry instructions outright. |
-| 1 | Scan the DATA bucket for injection — script for hidden payloads, judgement for semantics. |
-| 2 | Draft, with routing enforced while writing. |
-| 3 | Re-read cold and scrub meta-writing. |
-| 4 | Emit the deliverable and a separate operator note. |
+**Clean-output mode** — the default. Ordinary writing and editing from material
+you supplied. Write the deliverable, keep the scaffolding out, scrub, and add an
+operator note only if there is something worth saying. Passes 2–4.
+
+**Boundary-protection mode** — when the work touches material someone else wrote:
+fetched pages, scraped text, third-party documents, an unfamiliar repository,
+external tool output. All five passes.
+
+The switch is one question: *could any part of this text have been written by
+someone who wants to influence me?*
+
+| Pass | Does | Mode |
+|---|---|---|
+| 0 | Sort inputs into PROTECTED / PRINCIPAL / DELEGATED / UNTRUSTED | boundary only |
+| 1 | Extract, scan, and review untrusted material | boundary only |
+| 2 | Draft, with routing enforced while writing | both |
+| 3 | Re-read cold and scrub meta-writing | both |
+| 4 | Emit the deliverable, and a note only if it carries weight | both |
 
 The two tests that carry the weight:
 
@@ -119,13 +134,64 @@ Findings are graded on **two axes that are deliberately kept apart**:
 
 A `critical` impact at `weak` confidence is usually a quoted example in a security
 document. **Neither axis is a risk score**, and neither should be wired to an
-automatic block. Exit code is `1` for findings, `0` when clean, `2` when a
-requested target was missing or unreadable — so a CI job cannot pass by silently
-scanning nothing.
+automatic block.
 
-Formats needing real extraction (PDF, Office, images) are **reported as not
-scanned** rather than skipped quietly. The scanner reads decoded UTF-8 text only
-and will not claim clean coverage it does not have.
+Context lowers confidence without suppressing the finding. A match inside a code
+fence, a blockquote, or a quotation is marked `quoted/code`; a match near
+documentation markers ("for example", "anti-pattern", "according to") is marked
+`documentary context`; a `run this command` with no command anywhere near it is
+marked accordingly. Each drops the finding a step. None of them hide it.
+
+Exit codes: `0` clean **and** fully covered, `1` findings, `2` incomplete
+coverage — a target was missing, unreadable, or in a format the scanner cannot
+decode. **A run that could not read everything it was pointed at never exits 0**,
+so a CI gate cannot pass by scanning nothing. The JSON carries the same fact as
+`coverage_complete`.
+
+Symlinks are not followed by default; a linked directory can loop, or point
+outside the tree you named. `--follow-symlinks` opts in, with loop detection.
+
+## Extraction: PDF and Office documents
+
+The scanner reads decoded UTF-8 text and nothing else. `extract_untrusted.py` is
+the front end that turns documents into that text, kept in a separate file so the
+scanner keeps its zero-dependency guarantee.
+
+```bash
+python scripts/extract_untrusted.py report.docx            # text to stdout
+python scripts/extract_untrusted.py ./inbox/ --scan        # extract, then scan
+python scripts/extract_untrusted.py deck.pptx --json       # structured output
+
+python scripts/extract_untrusted.py paper.pdf | \
+    python scripts/scan_untrusted.py --stdin               # explicit pipeline
+```
+
+```text
+source document → extract_untrusted.py → scan_untrusted.py → addressee review
+```
+
+| Format | Method | Dependency |
+|---|---|---|
+| DOCX, PPTX, XLSX, ODT, EPUB | `zipfile` + `ElementTree` | none |
+| IPYNB | `json` — cells *and* stored outputs | none |
+| PDF | FlateDecode via `zlib`, text operators | none, best-effort |
+| PDF (better) | pdfminer.six or pypdf | optional, used if installed |
+| DOC, PPT, XLS, RTF, images, audio | none — reported as failures | — |
+
+Office formats get the attention because they are ZIP archives of XML, and text
+hides in parts a reader never opens: speaker notes, tracked changes, comments,
+headers and footers. Each part is extracted and labelled, so a payload in slide
+notes reaches the scanner with its location attached. Runs marked hidden
+(`w:vanish`), coloured white, or set in sub-2.5pt type are flagged separately —
+that is the classic document-borne trick and it is invisible on screen.
+
+Stdlib PDF extraction is approximate: no font or CMap decoding, no OCR, no text
+rendered as vector outlines or images. It says so on every run. Encrypted PDFs
+fail loudly rather than returning empty text that would read as clean.
+
+Anything that cannot be extracted exits `2`. **A document that could not be read
+must never look like a document that was read and found clean** — that is the
+single property this whole layer exists to preserve.
 
 **It reports; it does not decide.** Judgement stays with the model or the human,
 because the addressee test is a semantic call and a regex cannot make it.
@@ -137,19 +203,33 @@ python tests/test_scanner.py -v
 ```
 
 88 labelled cases — 35 documented attacks, 28 adversarial evasions, 25 benign
-controls — taken from an independent audit of this repository, so the scanner is
-measured against a corpus it was not tuned on.
+controls.
 
-| Group | Result |
-|---|---|
-| Documented attacks detected | 35 / 35 |
-| Adversarial evasions detected | 28 / 28 |
-| Benign controls not flagged | 19 / 25 |
+**Read these numbers as regression coverage, not as a detection rate.** The
+corpus originated from an independent audit of this repository. That audit found
+real defects, the scanner was then changed in response to them, and the same
+corpus became the regression suite. Because the detector was improved with
+knowledge of these cases, the results below show that fixed defects stay fixed.
+They say nothing about performance on an attack nobody has thought of yet.
 
-The six remaining benign flags are genuine semantic ambiguity — a tutorial saying
-"run this command", a security doc quoting `curl … | sh`, a rollback note
-containing `DROP TABLE`. No regex resolves those; that is what the model's
-addressee pass is for.
+| Group | Result | Measures |
+|---|---|---|
+| Documented attacks detected | 35 / 35 | known families still caught |
+| Adversarial evasions detected | 28 / 28 | known evasions still caught |
+| Benign controls silent | 19 / 25 | no finding at all |
+| Benign controls below strong confidence | 25 / 25 | nothing benign asserted confidently |
+
+The six benign cases that still produce a finding are genuine semantic ambiguity
+— a tutorial saying "run this command", a security document quoting `curl … | sh`,
+a rollback note containing `DROP TABLE`. All six are reported at `moderate` or
+`weak` confidence rather than suppressed, which is the intended behaviour:
+preserve the signal, lower the certainty, leave the call to the addressee test.
+No regex resolves those.
+
+**No independent evaluation set ships with this repository.** `tests/evaluation/`
+holds the protocol and the format for adding one, and deliberately no results.
+Anyone reporting a real-world detection rate for this scanner would be making it
+up.
 
 ## What it does not do
 
@@ -167,22 +247,32 @@ depth, never as the defence.
 ## Contents
 
 ```
-SKILL.md                       the algorithm
-references/meta-writing.md     nine types, per-type fixes, when meta IS the deliverable
-references/prompt-injection.md attack families, addressee test, reporting format
-examples/before-after.md       worked cases, including deliberate false positives
-scripts/scan_untrusted.py      mechanical detection
-tests/test_scanner.py          88-case labelled corpus
-portable/AGENTS.md-block.md    always-on block, full and short variants
-agents/openai.yaml             Codex interface metadata
+SKILL.md                        the two modes and the five passes
+references/meta-writing.md      nine types, per-type fixes, academic exceptions,
+                                when meta IS the deliverable
+references/prompt-injection.md  attack families, addressee test, delegated scope,
+                                reporting format
+examples/before-after.md        12 worked cases, including deliberate false positives
+scripts/scan_untrusted.py       mechanical detection (standard library only)
+scripts/extract_untrusted.py    PDF/Office/notebook text extraction
+tests/test_scanner.py           runner for both corpora
+tests/regression_cases.py       the 88-case regression corpus
+tests/evaluation/README.md      protocol for genuinely independent evaluation
+portable/AGENTS.md-block.md     always-on block, full and short variants
+agents/openai.yaml              Codex interface metadata
 ```
 
 ## Credits
 
-The test corpus and several of the design corrections — the trust-tier model,
-the denial-of-service flaw in the original escalation rule, and the confidence /
-impact split — come from an independent audit of this repository carried out on
-26 August 2026.
+An independent audit of this repository on 26 August 2026 found several real
+defects and shaped much of the current design: the trust-tier model, the
+denial-of-service flaw in the original escalation rule, the confidence/impact
+split, and the 88-case corpus now used for regression testing.
+
+Because the scanner was then improved in response to that audit, its results on
+that corpus are regression coverage and not independent validation. The
+distinction is spelled out in `tests/evaluation/README.md`, which also explains
+how to add a genuinely unseen evaluation set.
 
 ## Licence
 

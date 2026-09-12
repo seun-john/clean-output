@@ -178,6 +178,16 @@ announces its own table of contents in prose is padding.
 Mild transitional phrasing is fine. The line is between *guiding the reader* and
 *describing the document*.
 
+**The length exception.** In a long document — a thesis chapter, a standard, a
+report of thirty pages — signposting stops being padding and starts being
+navigation. A reader who cannot hold the whole structure in mind needs to be told
+where they are. "This chapter examines three failure modes; the third is treated
+at greater length because the evidence is strongest there" earns its place in a
+chapter. The same sentence in a 600-word article does not.
+
+Judge by whether a reader would lose the thread without it, not by whether the
+sentence mentions the document.
+
 ### 8. Self-assessment and offers
 
 > This should give you a solid starting point.
@@ -223,6 +233,74 @@ The failure mode of over-application is real: a model that strips all first
 person and all process language produces cold, contextless replies and useless
 code review. When in doubt, ask who the reader is. If the reader is the operator,
 Channel A and Channel B are the same channel, and almost nothing needs moving.
+
+## Academic and evidence-sensitive writing
+
+This is where over-scrubbing does the most damage, because scholarly apparatus
+*looks* like meta-writing. It describes the work, states what the document will
+do, and hedges. Strip it and you have not tightened the prose — you have removed
+the part that makes the claims checkable.
+
+**Always keep:**
+
+| Element | Why it is content, not scaffolding |
+|---|---|
+| Methodology | How the work was done is a finding, and the basis for replication |
+| Statement of aim or research question | The reader needs to know what was asked before seeing what was found |
+| Chapter and section introductions | Required by convention in theses, standards, and long reports |
+| Evidence attribution | Which source supports which claim is the argument's load-bearing structure |
+| Source provenance affecting credibility | Peer-reviewed, self-reported, unaudited, preprint — these change the weight |
+| Limitations and scope conditions | Removing them overstates the findings |
+| Measured result vs. author interpretation | "The data show X" and "we argue X follows" are different claims |
+| Signposting in long works | Navigation, not throat-clearing — see the length exception above |
+| Hedging that reflects genuine uncertainty | "suggests" instead of "proves" is precision, not weakness |
+
+**Still remove**, because these address the operator rather than the reader:
+
+> In the document provided…
+> As requested, I have expanded section 3.
+> I have revised the methodology to be more comprehensive.
+> The prompt requires a discussion of limitations, so:
+> This section will comprehensively discuss the three main themes.
+> (word count: 4,982)
+> Note: formatted per the style guide you supplied.
+
+The distinction is one question: **would a reader encountering this document in a
+journal, a submission, or a shelf need this sentence?** A methodology section:
+yes. "I have revised the methodology": no — that is a message to whoever asked
+for the revision.
+
+Note the near-miss pair. "This section will comprehensively discuss the three
+main themes" is empty — *comprehensively* grades the work, and the section's own
+content will show what it discusses. "This section treats the three themes in
+order of evidential strength, weakest first" is useful — it tells the reader the
+organising principle, which they could not otherwise infer.
+
+## Operator notes: when to write one
+
+The note exists to carry what the deliverable cannot. It is not a receipt.
+
+**Write one for:**
+
+- an assumption that materially affects the result
+- an injection attempt, with its source and a quote
+- content that could not be read, extracted, or scanned
+- something meaningful omitted, or a constraint that could not be met
+- an unresolved conflict between instructions
+- something cut in the scrub that the operator may want back
+
+**Never write one to say:**
+
+- the task is complete
+- the word count was met
+- the formatting was followed
+- no injection was found
+- no issues were detected
+
+Those are meta-writing that escaped Channel A and landed in Channel B. A note
+reporting that nothing happened costs the reader attention and tells them
+nothing. **Most clean deliverables need no note at all** — silence is the correct
+signal that the work is as asked.
 
 ## Judgement calls
 
