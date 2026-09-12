@@ -96,7 +96,7 @@ tight instruction budgets.
 
 ```bash
 python scripts/scan_untrusted.py suspicious.md
-python scripts/scan_untrusted.py ./scraped/ --min-severity high
+python scripts/scan_untrusted.py ./scraped/ --min-confidence strong
 python scripts/scan_untrusted.py page.html --json
 curl -s https://example.com | python scripts/scan_untrusted.py --stdin
 ```
