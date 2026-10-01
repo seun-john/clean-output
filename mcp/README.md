@@ -11,7 +11,7 @@ newline-delimited JSON-RPC 2.0, so there is no SDK to install.
 python mcp/server.py --selftest
 ```
 
-30 checks covering the handshake, both transports,, every tool, and the failure paths. No MCP
+30 checks covering the handshake, both transports, every tool, and the failure paths. No MCP
 client required.
 
 ## Tools
