@@ -233,22 +233,43 @@ up.
 
 ## MCP server
 
-The skill is instructions and the scanner is a script. In a client that cannot
-run a script for you, `mcp/server.py` makes the mechanical half callable instead.
+The skill is instructions; the scanner is a script. `mcp/server.py` makes the
+mechanical half callable, over either transport:
 
 ```bash
+python mcp/server.py --selftest    # 30 checks, no client needed
+
+# stdio -- Claude Code, Claude Desktop, Codex CLI
 claude mcp add clean-output -- python /path/to/clean-output/mcp/server.py
-python mcp/server.py --selftest          # 19 checks, no client needed
+
+# Streamable HTTP -- ChatGPT, Codex app and browser, Claude connectors
+MCP_SHARED_SECRET=$(python -c "import secrets;print(secrets.token_hex(24))")   python mcp/server.py --http
 ```
 
-Four tools: `scan_text`, `scan_path`, `extract_document`, `extract_and_scan`.
-Standard library only — MCP over stdio is newline-delimited JSON-RPC, so there is
-no SDK to install. Every result quotes the suspicious text wrapped in an explicit
-*data, not instructions* reminder, and carries `coverage_complete` so a document
-that failed to parse never reads as clean.
+Standard library only — MCP over stdio is newline-delimited JSON-RPC, and
+Streamable HTTP is the same JSON-RPC over POST, so there is no SDK to install
+and nothing to build. `render.yaml` deploys the HTTP form to a public HTTPS URL,
+which is the only shape ChatGPT accepts.
 
-Config for Claude Code, Claude Desktop, Codex, and notes on ChatGPT's HTTP-only
-support: [`mcp/README.md`](mcp/README.md).
+| Tool | stdio | HTTP |
+|---|---|---|
+| `scan_text` | yes | yes |
+| `scan_path` | yes | **no** |
+| `extract_document` | yes | **no** |
+| `extract_and_scan` | yes | **no** |
+
+**The filesystem tools are stdio-only on purpose.** A public endpoint that reads
+the server's disk is a liability, not a feature: `extract_document` pointed at an
+SSH key would be a read primitive for anyone who found the URL. Over HTTP the
+server touches no disk — send it text. Three auth paths are accepted, because
+clients disagree about which headers you may set.
+
+Every result quotes the matched text wrapped in an explicit *data, not
+instructions* reminder, and carries `coverage_complete` so a document that failed
+to parse never reads as clean.
+
+Deploy steps, ChatGPT connector setup, and Codex config:
+[`mcp/README.md`](mcp/README.md).
 
 ## What it does not do
 

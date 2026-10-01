@@ -11,7 +11,7 @@ newline-delimited JSON-RPC 2.0, so there is no SDK to install.
 python mcp/server.py --selftest
 ```
 
-19 checks covering the handshake, every tool, and the failure paths. No MCP
+30 checks covering the handshake, both transports,, every tool, and the failure paths. No MCP
 client required.
 
 ## Tools
@@ -79,25 +79,88 @@ invocations.
 
 ### ChatGPT
 
-ChatGPT's MCP support depends on your plan and changes faster than this file
-can track, so treat the following as a sketch rather than exact steps. Two
-routes exist in principle:
+ChatGPT connects **inbound from OpenAI's servers** over HTTPS. It has no stdio
+option, so a server on your laptop is unreachable no matter how it is
+configured. The endpoint must be public and speak Streamable HTTP.
 
-- **Developer mode / connectors.** Where available, ChatGPT connects to MCP
-  servers over HTTP rather than stdio. This server speaks stdio only, so it
-  needs a bridge — `mcp-proxy` and similar tools wrap a stdio server as HTTP —
-  plus a reachable URL, which means exposing it beyond your machine.
-- **Custom GPT Actions.** A different protocol entirely. You would wrap the
-  scanner in a small HTTP API and describe it with OpenAPI.
+That is what `--http` mode is for, and `render.yaml` deploys it.
 
-Both mean running a network service. **For most people on ChatGPT the paste
-route is better:** put the block from `../portable/AGENTS.md-block.md` into a
-Project's instructions or a Custom GPT, and upload `scan_untrusted.py` as
-knowledge if you want it to run the scanner in its Python sandbox. You lose
-automatic tool calls and keep everything that matters — the judgement rules.
+**One deliberate limitation.** HTTP mode serves `scan_text` only. The three
+filesystem tools stay stdio-local, because a public endpoint that reads the
+server's disk is a liability — `extract_document` pointed at an SSH key is a
+read primitive for anyone who finds the URL, and a shared secret is not enough
+to justify that. To check a document remotely, extract locally and send the
+text.
 
-Check OpenAI's current connector documentation before building the bridge. If
-it has changed, the documentation is right and this file is stale.
+#### Deploy
+
+1. Push this repository to GitHub (already done if you cloned it from there).
+2. Generate a secret:
+
+   ```bash
+   python -c "import secrets; print(secrets.token_hex(24))"
+   ```
+
+3. On [render.com](https://render.com): **New** → **Blueprint** → pick the repo.
+   Render reads `render.yaml`. When prompted for `MCP_SHARED_SECRET`, paste the
+   secret. Nothing is installed — the server has no dependencies.
+4. Wait for the deploy, then confirm:
+
+   ```bash
+   curl https://<your-service>.onrender.com/health
+   ```
+
+   Expect `{"ok": true, ..., "tools": ["scan_text"]}`.
+
+Free Render instances sleep when idle, so the first call after a quiet spell
+takes a few seconds to wake.
+
+#### Connect it
+
+In ChatGPT: **Settings** → **Connectors** → **Advanced** → **Developer mode**,
+then add a connector with
+
+- **URL** `https://<your-service>.onrender.com/mcp`
+- **Authentication** a bearer token, set to your secret
+
+Developer mode and custom connectors are plan-dependent and the UI moves
+around; if the labels differ, follow OpenAI's current connector documentation
+rather than this file.
+
+The same URL works anywhere that accepts a remote MCP server — Claude's custom
+connectors, the Codex app, Codex in the browser. For Codex, add to
+`~/.codex/config.toml`:
+
+```toml
+[mcp_servers.clean_output]
+enabled = true
+url = "https://<your-service>.onrender.com/mcp"
+
+[mcp_servers.clean_output.http_headers]
+Authorization = "Bearer <your-secret>"
+```
+
+#### Three ways to authenticate
+
+Clients disagree about which headers you may set, so the server accepts any of:
+
+| Method | For |
+|---|---|
+| `Authorization: Bearer <secret>` | ChatGPT and most clients |
+| `X-MCP-Secret: <secret>` | Claude's connector UI, which reserves `Authorization` for OAuth |
+| `?key=<secret>` | clients that let you set neither header |
+
+Comparison is constant-time. Without `MCP_SHARED_SECRET` the endpoint is open,
+and the server warns about it on every start.
+
+#### Running it yourself
+
+```bash
+MCP_SHARED_SECRET=$(python -c "import secrets;print(secrets.token_hex(24))")   python mcp/server.py --http
+```
+
+Listens on `PORT`, default 8080. Any host works — Render is just one option, and
+a tunnel such as Cloudflare Tunnel is fine for testing.
 
 ## What this does not change
 

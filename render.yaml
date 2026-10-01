@@ -1,0 +1,30 @@
+# Deploy the clean-output MCP server as a remote HTTPS endpoint, which is the
+# only shape ChatGPT accepts: it connects inbound from OpenAI's servers and has
+# no stdio option.
+#
+# Render reads this file. Create a Blueprint from the repo, set the secret when
+# prompted, and the endpoint becomes https://<service-name>.onrender.com/mcp
+#
+# HTTP mode serves scan_text only. The filesystem tools stay stdio-local --
+# see REMOTE_TOOL_NAMES in mcp/server.py.
+services:
+  - type: web
+    name: clean-output-mcp
+    runtime: python
+    plan: free
+    # No dependencies. The scanner and the server are standard library only,
+    # so there is nothing to install.
+    buildCommand: "python --version"
+    startCommand: "python mcp/server.py --http"
+    healthCheckPath: /health
+    envVars:
+      - key: MCP_TRANSPORT
+        value: http
+      - key: MCP_SHARED_SECRET
+        # Set this in Render's dashboard. Generate one with:
+        #   python -c "import secrets; print(secrets.token_hex(24))"
+        # Without it the endpoint is unauthenticated and the server says so
+        # loudly at startup.
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.12"
