@@ -253,4 +253,5 @@ an estimate of real-world detection rate. See `tests/evaluation/README.md`.
 | `scripts/scan_untrusted.py` | Mechanical detection (standard library only) |
 | `scripts/extract_untrusted.py` | Text out of PDF/Office/notebooks, for the scanner |
 | `tests/` | Regression corpus, and the protocol for independent evaluation |
+| `mcp/server.py` | Scanner and extractor as MCP tools, for clients that cannot run scripts |
 | `portable/AGENTS.md-block.md` | Same rules for Codex and other AGENTS.md readers |

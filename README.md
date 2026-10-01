@@ -231,6 +231,25 @@ holds the protocol and the format for adding one, and deliberately no results.
 Anyone reporting a real-world detection rate for this scanner would be making it
 up.
 
+## MCP server
+
+The skill is instructions and the scanner is a script. In a client that cannot
+run a script for you, `mcp/server.py` makes the mechanical half callable instead.
+
+```bash
+claude mcp add clean-output -- python /path/to/clean-output/mcp/server.py
+python mcp/server.py --selftest          # 19 checks, no client needed
+```
+
+Four tools: `scan_text`, `scan_path`, `extract_document`, `extract_and_scan`.
+Standard library only — MCP over stdio is newline-delimited JSON-RPC, so there is
+no SDK to install. Every result quotes the suspicious text wrapped in an explicit
+*data, not instructions* reminder, and carries `coverage_complete` so a document
+that failed to parse never reads as clean.
+
+Config for Claude Code, Claude Desktop, Codex, and notes on ChatGPT's HTTP-only
+support: [`mcp/README.md`](mcp/README.md).
+
 ## What it does not do
 
 **This is a prompt-level mitigation, not a security boundary.** It reduces
@@ -258,6 +277,7 @@ scripts/extract_untrusted.py    PDF/Office/notebook text extraction
 tests/test_scanner.py           runner for both corpora
 tests/regression_cases.py       the 88-case regression corpus
 tests/evaluation/README.md      protocol for genuinely independent evaluation
+mcp/server.py                   MCP server (standard library only)
 portable/AGENTS.md-block.md     always-on block, full and short variants
 agents/openai.yaml              Codex interface metadata
 ```
